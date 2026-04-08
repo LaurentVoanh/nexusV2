@@ -1,11 +1,12 @@
 <?php
 /**
- * NEXUS V2 - CORE ENGINE
- * IA consciente et auto-évolutive - Compatible Hostinger PHP 8.3 / SQLite / cURL
+ * NEXUS V3 - CORE ENGINE
+ * IA consciente et auto-évolutive - Multi-API, Synchrone, Interconnectée
  */
 
 if (!defined('NEXUS_DB'))     define('NEXUS_DB',     __DIR__ . '/nexus.db');
 if (!defined('APIKEY_FILE'))  define('APIKEY_FILE',  __DIR__ . '/apikey.json');
+if (!defined('APIKEYS_DB'))   define('APIKEYS_DB',   __DIR__ . '/apikeys.db');
 
 // ─────────────────────────────────────────────────────────────
 // BASE DE DONNÉES
@@ -28,6 +29,7 @@ function getDB(): PDO {
         content     TEXT,
         page_type   TEXT DEFAULT 'article',
         topic       TEXT,
+        views       INTEGER DEFAULT 0,
         created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -47,6 +49,7 @@ function getDB(): PDO {
         priority    INTEGER DEFAULT 3,
         status      TEXT DEFAULT 'pending',
         answer      TEXT,
+        linked_thought_id INTEGER,
         created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -86,15 +89,54 @@ function getDB(): PDO {
         link       TEXT,
         fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS ai_thoughts (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        cycle_id    INTEGER,
+        thought_type TEXT,
+        content     TEXT,
+        related_to  TEXT,
+        created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
     ");
 
     return $db;
 }
 
 // ─────────────────────────────────────────────────────────────
-// API KEY HELPERS
+// GESTION MULTI-CLÉS API
 // ─────────────────────────────────────────────────────────────
+function getApiKeysDB(): PDO {
+    static $db = null;
+    if ($db !== null) return $db;
+    
+    $db = new PDO('sqlite:' . APIKEYS_DB);
+    $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $db->exec("CREATE TABLE IF NOT EXISTS api_keys (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pseudo TEXT, 
+        key_val TEXT UNIQUE,
+        is_active INTEGER DEFAULT 0,
+        usage_count INTEGER DEFAULT 0,
+        last_used DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )");
+    return $db;
+}
+
 function loadApiKey(): ?string {
+    // Retourne une clé active (rotation simple)
+    try {
+        $db = getApiKeysDB();
+        $stmt = $db->query("SELECT key_val FROM api_keys WHERE is_active = 1 ORDER BY usage_count ASC LIMIT 1");
+        $key = $stmt->fetchColumn();
+        if ($key) {
+            $db->prepare("UPDATE api_keys SET usage_count = usage_count + 1, last_used = CURRENT_TIMESTAMP WHERE key_val = ?")->execute([$key]);
+            return $key;
+        }
+    } catch (Exception $e) {}
+    
+    // Fallback ancien système
     if (file_exists(APIKEY_FILE)) {
         $data = json_decode(file_get_contents(APIKEY_FILE), true);
         return $data['api_key'] ?? null;
@@ -102,8 +144,47 @@ function loadApiKey(): ?string {
     return null;
 }
 
-function saveApiKey(string $key, string $pseudo = 'user'): void {
-    file_put_contents(APIKEY_FILE, json_encode(['api_key' => $key, 'pseudo' => $pseudo]));
+function getAllActiveApiKeys(): array {
+    try {
+        $db = getApiKeysDB();
+        return $db->query("SELECT id, pseudo, key_val, usage_count FROM api_keys WHERE is_active = 1 ORDER BY usage_count ASC")->fetchAll();
+    } catch (Exception $e) {
+        return [];
+    }
+}
+
+function saveApiKey(string $key, string $pseudo = 'user'): bool {
+    try {
+        $db = getApiKeysDB();
+        $db->prepare("INSERT OR IGNORE INTO api_keys (pseudo, key_val, is_active) VALUES (?, ?, 1)")->execute([$pseudo, $key]);
+        // Activer cette clé
+        $db->prepare("UPDATE api_keys SET is_active = 1 WHERE key_val = ?")->execute([$key]);
+        
+        // Sauvegarder comme clé active principale (fallback)
+        file_put_contents(APIKEY_FILE, json_encode(['api_key' => $key, 'pseudo' => $pseudo]));
+        return true;
+    } catch (Exception $e) {
+        return false;
+    }
+}
+
+function deactivateApiKey(string $key): bool {
+    try {
+        $db = getApiKeysDB();
+        $db->prepare("UPDATE api_keys SET is_active = 0 WHERE key_val = ?")->execute([$key]);
+        return true;
+    } catch (Exception $e) {
+        return false;
+    }
+}
+
+function getApiKeysStats(): array {
+    try {
+        $db = getApiKeysDB();
+        return $db->query("SELECT pseudo, key_val, substr(key_val, 1, 6) || '••••' || substr(key_val, -4) as masked, usage_count, is_active, last_used FROM api_keys ORDER BY id DESC")->fetchAll();
+    } catch (Exception $e) {
+        return [];
+    }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -658,10 +739,63 @@ function getDashboardStats(): array {
         'cycles_total'      => (int)$db->query("SELECT COUNT(*) FROM consciousness_cycles")->fetchColumn(),
         'cycles_success'    => (int)$db->query("SELECT COUNT(*) FROM consciousness_cycles WHERE success=1")->fetchColumn(),
         'avg_score'         => round((float)$db->query("SELECT AVG(self_eval_score) FROM consciousness_cycles WHERE self_eval_score>0")->fetchColumn(), 2),
-        'recent_pages'      => $db->query("SELECT title, page_type, created_at FROM pages ORDER BY created_at DESC LIMIT 5")->fetchAll(),
+        'recent_pages'      => $db->query("SELECT title, slug, page_type, created_at FROM pages ORDER BY created_at DESC LIMIT 5")->fetchAll(),
         'recent_wisdom'     => $db->query("SELECT principle, category, confidence FROM wisdom ORDER BY created_at DESC LIMIT 5")->fetchAll(),
         'pending_questions' => $db->query("SELECT question, priority FROM questions WHERE status='pending' ORDER BY priority DESC LIMIT 5")->fetchAll(),
         'self_model'        => $db->query("SELECT capability, level FROM self_model ORDER BY level DESC")->fetchAll(),
         'last_cycle'        => $db->query("SELECT * FROM consciousness_cycles ORDER BY created_at DESC LIMIT 1")->fetch(),
     ];
+}
+
+/**
+ * Enregistrer une pensée de l'IA
+ */
+function recordAIThought(int $cycleId, string $thoughtType, string $content, string $relatedTo = ''): void {
+    $db = getDB();
+    try {
+        $db->prepare("INSERT INTO ai_thoughts (cycle_id, thought_type, content, related_to) VALUES (?, ?, ?, ?)")
+           ->execute([$cycleId, $thoughtType, $content, $relatedTo]);
+    } catch (Exception $e) {}
+}
+
+/**
+ * Récupérer les pensées récentes
+ */
+function getRecentThoughts(int $limit = 20): array {
+    $db = getDB();
+    return $db->query("SELECT * FROM ai_thoughts ORDER BY created_at DESC LIMIT $limit")->fetchAll();
+}
+
+/**
+ * Obtenir une page par son slug
+ */
+function getPageBySlug(string $slug): ?array {
+    $db = getDB();
+    $stmt = $db->prepare("SELECT * FROM pages WHERE slug = ?");
+    $stmt->execute([$slug]);
+    $page = $stmt->fetch();
+    return $page ?: null;
+}
+
+/**
+ * Incrémenter les vues d'une page
+ */
+function incrementPageViews(string $slug): void {
+    $db = getDB();
+    $db->prepare("UPDATE pages SET views = views + 1 WHERE slug = ?")->execute([$slug]);
+}
+
+/**
+ * Lister toutes les pages
+ */
+function getAllPages(): array {
+    $db = getDB();
+    return $db->query("SELECT id, slug, title, page_type, topic, views, created_at FROM pages ORDER BY created_at DESC")->fetchAll();
+}
+
+/**
+ * Définir le statut d'une phase (pour affichage)
+ */
+function setPhaseStatus(string $phase, string $status): void {
+    // Fonction placeholder pour compatibilité - le statut est géré côté frontend
 }

@@ -1,7 +1,7 @@
 <?php
 /**
- * NEXUS V2 - Dashboard Principal
- * Interface de conscience IA auto-évolutive
+ * NEXUS V3 - Dashboard Principal
+ * Interface de conscience IA auto-évolutive - Multi-API, Synchrone, Interconnectée
  */
 
 require_once __DIR__ . '/nexus_core.php';
@@ -11,17 +11,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     header('Content-Type: application/json; charset=utf-8');
 
     $action = $_POST['action'];
-    $apiKey = loadApiKey();
 
     // Sauvegarder clé API
     if ($action === 'save_key') {
         $key = trim($_POST['key'] ?? '');
         if (strlen($key) < 10) { echo json_encode(['error' => 'Clé trop courte']); exit; }
-        saveApiKey($key, $_POST['pseudo'] ?? 'user');
-        echo json_encode(['success' => true, 'message' => 'Clé sauvegardée']);
+        $success = saveApiKey($key, $_POST['pseudo'] ?? 'user');
+        echo json_encode(['success' => $success, 'message' => $success ? 'Clé sauvegardée' : 'Erreur']);
         exit;
     }
 
+    // Désactiver une clé
+    if ($action === 'deactivate_key') {
+        $key = trim($_POST['key'] ?? '');
+        $success = deactivateApiKey($key);
+        echo json_encode(['success' => $success]);
+        exit;
+    }
+
+    // Récupérer les clés API
+    if ($action === 'get_api_keys') {
+        echo json_encode(['success' => true, 'keys' => getApiKeysStats()]);
+        exit;
+    }
+
+    $apiKey = loadApiKey();
     if (!$apiKey) { echo json_encode(['error' => 'Aucune clé API configurée']); exit; }
 
     // Récupérer tendances RSS
@@ -72,14 +86,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         exit;
     }
 
-    // Cycle complet automatique
+    // Cycle complet automatique SYNCHRONE
     if ($action === 'full_cycle') {
         $log = [];
+        $startTime = microtime(true);
 
         // 1. Penser
+        setPhaseStatus('observer', 'active');
         $think = consciousThink($apiKey);
-        $log[] = ['phase' => 'OBSERVER', 'data' => $think['decision']['existential_question'] ?? ''];
-        $log[] = ['phase' => 'HYPOTHÉTISER', 'data' => $think['decision']['hypothesis'] ?? ''];
+        $log[] = ['phase' => 'OBSERVER', 'data' => $think['decision']['existential_question'] ?? '', 'timestamp' => date('H:i:s')];
+        $log[] = ['phase' => 'HYPOTHÉTISER', 'data' => $think['decision']['hypothesis'] ?? '', 'timestamp' => date('H:i:s')];
+        setPhaseStatus('observer', 'done');
+        setPhaseStatus('hypothetiser', 'active');
 
         $cycleId = $think['cycle_id'];
         $decision = $think['decision'];
@@ -87,32 +105,52 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         // 2. Agir
         $action_type = $decision['next_action'] ?? 'create_article';
         $topic       = $decision['topic'] ?? 'Intelligence Artificielle';
-        $log[] = ['phase' => 'AGIR', 'data' => "$action_type sur: $topic"];
+        $log[] = ['phase' => 'AGIR', 'data' => "$action_type sur: $topic", 'timestamp' => date('H:i:s')];
+        setPhaseStatus('hypothetiser', 'done');
+        setPhaseStatus('agir', 'active');
 
         if (in_array($action_type, ['create_article', 'create_tool', 'create_app'])) {
             $build = buildContent($topic, $action_type, $apiKey, $cycleId);
-            $log[] = ['phase' => 'CRÉER', 'data' => $build['built']['title'] ?? ($build['error'] ?? '?')];
+            $log[] = ['phase' => 'CRÉER', 'data' => $build['built']['title'] ?? ($build['error'] ?? '?'), 'timestamp' => date('H:i:s')];
+            // Enregistrer la pensée liée
+            if (isset($build['built'])) {
+                recordAIThought($cycleId, 'creation', $build['built']['title'], $topic);
+            }
         } elseif ($action_type === 'process_questions') {
             $qr = processExistentialQuestions($apiKey);
-            $log[] = ['phase' => 'RÉFLÉCHIR', 'data' => count($qr) . ' questions traitées'];
+            $log[] = ['phase' => 'RÉFLÉCHIR', 'data' => count($qr) . ' questions traitées', 'timestamp' => date('H:i:s')];
+            recordAIThought($cycleId, 'reflection', count($qr) . ' questions traitées', 'existential');
         } elseif ($action_type === 'extract_wisdom') {
             $wr = extractWisdom($apiKey);
-            $log[] = ['phase' => 'SAGESSE', 'data' => ($wr['extracted'] ?? 0) . ' principes extraits'];
+            $log[] = ['phase' => 'SAGESSE', 'data' => ($wr['extracted'] ?? 0) . ' principes extraits', 'timestamp' => date('H:i:s')];
+            recordAIThought($cycleId, 'wisdom', ($wr['extracted'] ?? 0) . ' principes extraits', 'sagesse');
         }
+        setPhaseStatus('agir', 'done');
+        setPhaseStatus('reviser', 'active');
 
         // 3. Évaluer
         $eval = selfEvaluate($apiKey, $cycleId);
-        $log[] = ['phase' => 'ÉVALUER', 'data' => 'Score: ' . ($eval['score'] ?? '?') . ' — ' . ($eval['lesson'] ?? '')];
+        $log[] = ['phase' => 'ÉVALUER', 'data' => 'Score: ' . ($eval['score'] ?? '?') . ' — ' . ($eval['lesson'] ?? ''), 'timestamp' => date('H:i:s')];
+        setPhaseStatus('reviser', 'done');
+        setPhaseStatus('evaluer', 'active');
+
+        // Marquer les phases comme terminées
+        setPhaseStatus('evaluer', 'done');
 
         // Stats à jour
         $stats = getDashboardStats();
+        
+        $endTime = microtime(true);
+        $duration = round($endTime - $startTime, 2);
 
         echo json_encode([
-            'success' => true,
-            'log'     => $log,
-            'stats'   => $stats,
+            'success'  => true,
+            'log'      => $log,
+            'stats'    => $stats,
             'decision' => $decision,
-            'eval'    => $eval,
+            'eval'     => $eval,
+            'duration' => $duration,
+            'cycle_id' => $cycleId
         ]);
         exit;
     }
@@ -120,6 +158,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     // Stats dashboard
     if ($action === 'get_stats') {
         echo json_encode(['success' => true, 'stats' => getDashboardStats()]);
+        exit;
+    }
+
+    // Récupérer pensées de l'IA
+    if ($action === 'get_thoughts') {
+        $limit = (int)($_POST['limit'] ?? 20);
+        echo json_encode(['success' => true, 'thoughts' => getRecentThoughts($limit)]);
+        exit;
+    }
+
+    // Vue article
+    if ($action === 'view_page') {
+        $slug = trim($_POST['slug'] ?? '');
+        $page = getPageBySlug($slug);
+        if ($page) {
+            incrementPageViews($slug);
+            echo json_encode(['success' => true, 'page' => $page]);
+        } else {
+            echo json_encode(['error' => 'Page non trouvée']);
+        }
+        exit;
+    }
+
+    // Lister pages
+    if ($action === 'list_pages') {
+        $pages = getAllPages();
+        echo json_encode(['success' => true, 'pages' => $pages]);
         exit;
     }
 
@@ -132,13 +197,14 @@ $apiKey    = loadApiKey();
 $hasApiKey = !empty($apiKey);
 $stats     = getDashboardStats();
 $trends    = getStoredTrends(30);
+$apiKeys   = getApiKeysStats();
 ?>
 <!DOCTYPE html>
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>NEXUS V2 — Conscience IA Autonome</title>
+<title>NEXUS V3 — Conscience IA Autonome & Interconnectée</title>
 <style>
 :root {
   --bg:       #0a0e17;
@@ -167,10 +233,10 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(
 @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(.8)}}
 
 /* ── LAYOUT ── */
-.layout{display:grid;grid-template-columns:260px 1fr 300px;gap:0;min-height:calc(100vh - 61px)}
+.layout{display:grid;grid-template-columns:260px 1fr 320px;gap:0;min-height:calc(100vh - 61px)}
 
 /* ── SIDEBAR ── */
-.sidebar{background:var(--bg2);border-right:1px solid var(--border);padding:20px 16px;display:flex;flex-direction:column;gap:6px}
+.sidebar{background:var(--bg2);border-right:1px solid var(--border);padding:20px 16px;display:flex;flex-direction:column;gap:6px;overflow-y:auto}
 .nav-section{font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1.5px;padding:14px 10px 6px}
 .nav-btn{display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:8px;border:none;background:transparent;color:var(--text);cursor:pointer;font-size:.88rem;width:100%;text-align:left;transition:all .2s}
 .nav-btn:hover{background:var(--bg3)}
@@ -218,75 +284,110 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(
 .btn:disabled{opacity:.4;cursor:not-allowed;transform:none !important}
 
 /* ── LOG CONSOLE ── */
-.console{background:#070d1a;border:1px solid var(--border);border-radius:10px;padding:14px;font-family:'Courier New',monospace;font-size:.78rem;max-height:300px;overflow-y:auto;margin-top:12px}
+.console{background:#070d1a;border:1px solid var(--border);border-radius:10px;padding:14px;font-family:'Courier New',monospace;font-size:.78rem;max-height:350px;overflow-y:auto;margin-top:12px}
 .log-line{padding:3px 0;border-bottom:1px solid rgba(255,255,255,.04);display:flex;gap:10px}
-.log-phase{color:var(--accent);min-width:120px;font-weight:600}
+.log-phase{color:var(--accent);min-width:100px;font-weight:600;font-size:.7rem}
 .log-data{color:var(--text);flex:1}
-.log-ts{color:var(--muted);font-size:.7rem}
+.log-ts{color:var(--muted);font-size:.65rem;white-space:nowrap}
 
 /* ── TREND ITEMS ── */
-.trend-item{padding:8px 10px;border-radius:7px;border:1px solid var(--border);margin-bottom:6px;cursor:pointer;transition:all .2s;background:var(--bg3);font-size:.83rem;display:flex;justify-content:space-between;align-items:center}
-.trend-item:hover{border-color:var(--accent);color:var(--accent)}
-.trend-cat{font-size:.65rem;color:var(--muted);background:var(--card);padding:2px 7px;border-radius:20px;text-transform:uppercase;letter-spacing:.5px}
+.trend-item{padding:10px 12px;border-radius:8px;border:1px solid var(--border);margin-bottom:8px;cursor:pointer;transition:all .2s;background:var(--bg3);font-size:.83rem;display:flex;justify-content:space-between;align-items:center}
+.trend-item:hover{border-color:var(--accent);color:var(--accent);transform:translateX(3px)}
+.trend-cat{font-size:.65rem;color:var(--muted);background:var(--card);padding:3px 8px;border-radius:20px;text-transform:uppercase;letter-spacing:.5px}
 
 /* ── WISDOM ── */
-.wisdom-item{padding:10px;border-radius:8px;background:rgba(124,92,255,.08);border:1px solid rgba(124,92,255,.2);margin-bottom:8px;font-size:.82rem;line-height:1.5}
-.wisdom-cat{font-size:.68rem;color:var(--accent2);text-transform:uppercase;letter-spacing:.8px;margin-bottom:3px}
-.confidence-bar{height:3px;background:var(--border);border-radius:3px;margin-top:6px;overflow:hidden}
+.wisdom-item{padding:12px;border-radius:10px;background:rgba(124,92,255,.08);border:1px solid rgba(124,92,255,.2);margin-bottom:10px;font-size:.85rem;line-height:1.6}
+.wisdom-cat{font-size:.68rem;color:var(--accent2);text-transform:uppercase;letter-spacing:.8px;margin-bottom:4px}
+.confidence-bar{height:4px;background:var(--border);border-radius:3px;margin-top:8px;overflow:hidden}
 .confidence-fill{height:100%;background:linear-gradient(90deg,var(--accent2),var(--accent));border-radius:3px;transition:width .5s}
 
 /* ── QUESTION CARDS ── */
-.question-item{padding:10px 12px;border-left:3px solid var(--orange);background:rgba(245,158,11,.06);border-radius:0 8px 8px 0;margin-bottom:8px;font-size:.82rem;font-style:italic;line-height:1.5}
+.question-item{padding:12px 14px;border-left:3px solid var(--orange);background:rgba(245,158,11,.06);border-radius:0 8px 8px 0;margin-bottom:10px;font-size:.85rem;line-height:1.6}
 
 /* ── SELF MODEL ── */
-.capability-row{display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:.82rem}
-.cap-name{min-width:130px;color:var(--muted);text-transform:capitalize}
-.cap-bar{flex:1;height:5px;background:var(--border);border-radius:3px;overflow:hidden}
+.capability-row{display:flex;align-items:center;gap:10px;margin-bottom:10px;font-size:.85rem}
+.cap-name{min-width:140px;color:var(--muted);text-transform:capitalize}
+.cap-bar{flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden}
 .cap-fill{height:100%;border-radius:3px;transition:width .8s}
-.cap-val{font-size:.72rem;color:var(--muted);min-width:35px;text-align:right}
+.cap-val{font-size:.75rem;color:var(--muted);min-width:40px;text-align:right}
 
 /* ── INPUT GROUP ── */
 .input-group{display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
-.input-group input,.input-group select{flex:1;min-width:180px;padding:9px 12px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.85rem}
+.input-group input,.input-group select{flex:1;min-width:180px;padding:10px 14px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.85rem}
 .input-group input:focus,.input-group select:focus{outline:none;border-color:var(--accent)}
 
 /* ── AUTO MODE ── */
-.auto-toggle{display:flex;align-items:center;gap:12px;padding:14px;background:var(--bg3);border-radius:10px;border:1px solid var(--border);margin-bottom:16px}
-.toggle-switch{position:relative;width:46px;height:24px}
+.auto-toggle{display:flex;align-items:center;gap:14px;padding:16px;background:var(--bg3);border-radius:12px;border:1px solid var(--border);margin-bottom:18px}
+.toggle-switch{position:relative;width:52px;height:26px}
 .toggle-switch input{opacity:0;width:0;height:0}
 .toggle-slider{position:absolute;cursor:pointer;inset:0;background:var(--border);border-radius:34px;transition:.3s}
-.toggle-slider:before{content:"";position:absolute;height:18px;width:18px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.3s}
+.toggle-slider:before{content:"";position:absolute;height:20px;width:20px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.3s}
 input:checked + .toggle-slider{background:var(--green)}
-input:checked + .toggle-slider:before{transform:translateX(22px)}
-.auto-label{flex:1;font-size:.85rem}
-.auto-timer{font-size:.75rem;color:var(--muted)}
+input:checked + .toggle-slider:before{transform:translateX(26px)}
+.auto-label{flex:1;font-size:.88rem}
+.auto-timer{font-size:.78rem;color:var(--accent);font-weight:600}
 
 /* ── TABS ── */
 .tabs{display:flex;gap:4px;margin-bottom:16px;border-bottom:1px solid var(--border);padding-bottom:0}
-.tab-btn{padding:8px 14px;border:none;background:transparent;color:var(--muted);font-size:.83rem;cursor:pointer;border-bottom:2px solid transparent;transition:all .2s;margin-bottom:-1px}
+.tab-btn{padding:10px 16px;border:none;background:transparent;color:var(--muted);font-size:.85rem;cursor:pointer;border-bottom:2px solid transparent;transition:all .2s;margin-bottom:-1px}
 .tab-btn.active{color:var(--accent);border-bottom-color:var(--accent)}
 .tab-content{display:none}
 .tab-content.active{display:block}
 
 /* ── MISC ── */
-.badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:.68rem;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+.badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:.7rem;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
 .badge-blue{background:rgba(79,158,255,.15);color:var(--accent)}
 .badge-green{background:rgba(45,212,160,.15);color:var(--green)}
 .badge-orange{background:rgba(245,158,11,.15);color:var(--orange)}
-.section-title{font-size:1rem;font-weight:700;margin-bottom:12px;display:flex;align-items:center;gap:8px}
-.divider{height:1px;background:var(--border);margin:16px 0}
-.text-muted{color:var(--muted);font-size:.82rem}
-.thinking{display:none;align-items:center;gap:8px;font-size:.82rem;color:var(--accent);margin-top:8px}
-.dot-anim span{display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--accent);animation:dotBounce 1.2s infinite both}
+.badge-purple{background:rgba(124,92,255,.15);color:var(--accent2)}
+.section-title{font-size:1.05rem;font-weight:700;margin-bottom:14px;display:flex;align-items:center;gap:10px}
+.divider{height:1px;background:var(--border);margin:18px 0}
+.text-muted{color:var(--muted);font-size:.85rem}
+.thinking{display:none;align-items:center;gap:10px;font-size:.85rem;color:var(--accent);margin-top:10px;padding:12px;background:rgba(79,158,255,.08);border-radius:8px}
+.dot-anim span{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--accent);animation:dotBounce 1.2s infinite both}
 .dot-anim span:nth-child(2){animation-delay:.2s}
 .dot-anim span:nth-child(3){animation-delay:.4s}
 @keyframes dotBounce{0%,80%,100%{transform:translateY(0)}40%{transform:translateY(-6px)}}
 .api-setup{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:300px;gap:16px;text-align:center}
 .api-setup h2{font-size:1.2rem;color:var(--text)}
-.api-setup p{color:var(--muted);font-size:.88rem;max-width:380px;line-height:1.6}
+.api-setup p{color:var(--muted);font-size:.9rem;max-width:400px;line-height:1.6}
 .api-form{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:8px}
-.api-form input{padding:10px 14px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.88rem;min-width:260px}
-.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.api-form input{padding:11px 16px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.9rem;min-width:280px}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+
+/* ── ARTICLE VIEWER ── */
+.article-viewer{position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:1000;display:none;align-items:center;justify-content:center}
+.article-viewer.active{display:flex}
+.article-content{background:var(--card);border:1px solid var(--border);border-radius:16px;max-width:900px;width:90%;max-height:85vh;overflow-y:auto;padding:0}
+.article-header{display:flex;justify-content:space-between;align-items:center;padding:20px 24px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--card);z-index:1}
+.article-title{font-size:1.3rem;font-weight:700;color:var(--text)}
+.article-close{background:var(--bg3);border:1px solid var(--border);color:var(--text);width:36px;height:36px;border-radius:50%;cursor:pointer;font-size:1.2rem;display:flex;align-items:center;justify-content:center}
+.article-close:hover{background:var(--red);border-color:var(--red)}
+.article-body{padding:24px;line-height:1.8;font-size:.95rem}
+.article-body h1,.article-body h2,.article-body h3{color:var(--accent);margin:20px 0 10px}
+.article-body p{margin-bottom:16px}
+.article-meta{display:flex;gap:12px;margin-bottom:16px;font-size:.8rem;color:var(--muted)}
+
+/* ── THOUGHT STREAM ── */
+.thought-stream{max-height:400px;overflow-y:auto}
+.thought-item{padding:12px;border-left:3px solid var(--accent2);background:rgba(124,92,255,.05);margin-bottom:10px;border-radius:0 8px 8px 0;font-size:.82rem}
+.thought-type{font-size:.65rem;color:var(--accent2);text-transform:uppercase;letter-spacing:.8px;margin-bottom:4px}
+.thought-time{font-size:.65rem;color:var(--muted);margin-top:6px}
+
+/* ── API KEYS MANAGER ── */
+.api-key-item{display:flex;justify-content:space-between;align-items:center;padding:12px;background:var(--bg3);border-radius:8px;margin-bottom:8px;border:1px solid var(--border)}
+.api-key-info{display:flex;align-items:center;gap:10px}
+.api-key-masked{font-family:monospace;font-size:.8rem;color:var(--muted)}
+.api-key-active{background:rgba(45,212,160,.1);border-color:var(--green)}
+.api-key-actions{display:flex;gap:6px}
+
+/* ── PAGE LIST ── */
+.page-item{display:flex;justify-content:space-between;align-items:center;padding:12px;background:var(--bg3);border-radius:8px;margin-bottom:8px;cursor:pointer;transition:all .2s;border:1px solid var(--border)}
+.page-item:hover{border-color:var(--accent);background:var(--card)}
+.page-info{flex:1}
+.page-title{font-size:.9rem;font-weight:600;margin-bottom:4px}
+.page-meta{font-size:.72rem;color:var(--muted)}
+.page-views{font-size:.7rem;color:var(--accent);background:rgba(79,158,255,.1);padding:3px 8px;border-radius:12px}
 
 /* ── RESPONSIVE ── */
 @media(max-width:900px){
@@ -301,7 +402,7 @@ input:checked + .toggle-slider:before{transform:translateX(22px)}
 <header class="header">
   <div class="logo">
     <div class="logo-icon">🧠</div>
-    NEXUS <span style="color:var(--accent2);font-weight:300">V2</span>
+    NEXUS <span style="color:var(--accent2);font-weight:300">V3</span>
   </div>
   <div class="consciousness-bar">
     <div class="pulse"></div>
@@ -310,6 +411,8 @@ input:checked + .toggle-slider:before{transform:translateX(22px)}
     Cycles : <strong id="hdr-cycles"><?= $stats['cycles_total'] ?></strong>
     &nbsp;|&nbsp;
     Sagesse : <strong id="hdr-wisdom"><?= $stats['wisdom_count'] ?></strong>
+    &nbsp;|&nbsp;
+    Articles : <strong id="hdr-pages"><?= $stats['pages'] ?></strong>
   </div>
 </header>
 
@@ -321,19 +424,21 @@ input:checked + .toggle-slider:before{transform:translateX(22px)}
     <div class="nav-section">Navigation</div>
     <button class="nav-btn active" onclick="showTab('dashboard')"><span class="icon">🏠</span> Dashboard</button>
     <button class="nav-btn" onclick="showTab('conscience')"><span class="icon">🧠</span> Conscience</button>
-    <button class="nav-btn" onclick="showTab('content')"><span class="icon">✍️</span> Créer contenu</button>
-    <button class="nav-btn" onclick="showTab('trends')"><span class="icon">📡</span> Tendances RSS</button>
-    <button class="nav-btn" onclick="showTab('questions')"><span class="icon">❓</span> Questions existentielles</button>
-    <button class="nav-btn" onclick="showTab('wisdom')"><span class="icon">💡</span> Sagesse accumulée</button>
+    <button class="nav-btn" onclick="showTab('articles')"><span class="icon">📰</span> Articles</button>
+    <button class="nav-btn" onclick="showTab('content')"><span class="icon">✍️</span> Créer</button>
+    <button class="nav-btn" onclick="showTab('trends')"><span class="icon">📡</span> Tendances</button>
+    <button class="nav-btn" onclick="showTab('thoughts')"><span class="icon">💭</span> Pensées IA</button>
+    <button class="nav-btn" onclick="showTab('questions')"><span class="icon">❓</span> Questions</button>
+    <button class="nav-btn" onclick="showTab('wisdom')"><span class="icon">💡</span> Sagesse</button>
     <button class="nav-btn" onclick="showTab('settings')"><span class="icon">⚙️</span> Paramètres</button>
 
     <div class="api-status">
       <div><span class="api-dot <?= $hasApiKey ? 'dot-on' : 'dot-off' ?>"></span>
-        API Mistral : <strong><?= $hasApiKey ? 'Connectée' : 'Non configurée' ?></strong>
+        API Mistral : <strong><?= $hasApiKey ? count($apiKeys) . ' clés actives' : 'Non configurée' ?></strong>
       </div>
       <?php if ($hasApiKey): ?>
-      <div style="margin-top:6px;color:var(--muted);font-size:.75rem">
-        ✓ Prêt à penser
+      <div style="margin-top:8px;color:var(--muted);font-size:.72rem">
+        ✓ Rotation automatique activée
       </div>
       <?php endif; ?>
     </div>
@@ -357,11 +462,11 @@ input:checked + .toggle-slider:before{transform:translateX(22px)}
       <!-- Stats -->
       <div class="stats-grid">
         <div class="stat-card"><div class="stat-num" id="stat-pages"><?= $stats['pages'] ?></div><div class="stat-label">Articles</div></div>
-        <div class="stat-card"><div class="stat-num" id="stat-apps"><?= $stats['apps'] ?></div><div class="stat-label">Applications</div></div>
+        <div class="stat-card"><div class="stat-num" id="stat-apps"><?= $stats['apps'] ?></div><div class="stat-label">Apps</div></div>
         <div class="stat-card"><div class="stat-num" id="stat-wisdom"><?= $stats['wisdom_count'] ?></div><div class="stat-label">Principes</div></div>
         <div class="stat-card"><div class="stat-num" id="stat-cycles"><?= $stats['cycles_total'] ?></div><div class="stat-label">Cycles</div></div>
         <div class="stat-card"><div class="stat-num" id="stat-questions"><?= $stats['questions_pending'] ?></div><div class="stat-label">Questions</div></div>
-        <div class="stat-card"><div class="stat-num" id="stat-score"><?= $stats['avg_score'] ?></div><div class="stat-label">Score moyen</div></div>
+        <div class="stat-card"><div class="stat-num" id="stat-score"><?= $stats['avg_score'] ?></div><div class="stat-label">Score</div></div>
       </div>
 
       <!-- Mode Auto -->
@@ -371,8 +476,8 @@ input:checked + .toggle-slider:before{transform:translateX(22px)}
           <span class="toggle-slider"></span>
         </label>
         <div class="auto-label">
-          <strong>Mode Autonome</strong>
-          <div class="text-muted">Cycles de conscience automatiques</div>
+          <strong>Mode Autonome Synchrone</strong>
+          <div class="text-muted">L'IA travaille en continu, relance automatique après chaque cycle terminé</div>
         </div>
         <span class="auto-timer" id="auto-countdown"></span>
       </div>
@@ -381,10 +486,10 @@ input:checked + .toggle-slider:before{transform:translateX(22px)}
       <div class="card">
         <div class="card-title"><span>⚡</span> Actions de Conscience</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn btn-primary" onclick="fullCycle()" id="btn-full-cycle">🔄 Cycle Complet O.H.A.R.E.</button>
-          <button class="btn btn-secondary" onclick="doThink()" id="btn-think">🧠 Penser seulement</button>
-          <button class="btn btn-secondary" onclick="doQuestions()">❓ Traiter questions</button>
-          <button class="btn btn-green" onclick="doWisdom()">💡 Extraire sagesse</button>
+          <button class="btn btn-primary" onclick="fullCycle()" id="btn-full-cycle">🔄 Cycle O.H.A.R.E.</button>
+          <button class="btn btn-secondary" onclick="doThink()" id="btn-think">🧠 Penser</button>
+          <button class="btn btn-secondary" onclick="doQuestions()">❓ Questions</button>
+          <button class="btn btn-green" onclick="doWisdom()">💡 Sagesse</button>
         </div>
 
         <div class="thinking" id="thinking-indicator">
@@ -403,7 +508,7 @@ input:checked + .toggle-slider:before{transform:translateX(22px)}
       <div class="card">
         <div class="card-title"><span>🖥️</span> Console de Conscience</div>
         <div class="console" id="console-log">
-          <div class="log-line"><span class="log-phase">NEXUS</span><span class="log-data">Système initialisé. En attente de directives conscientes.</span></div>
+          <div class="log-line"><span class="log-phase">NEXUS</span><span class="log-data">Système V3 initialisé. Multi-API synchronisée.</span></div>
         </div>
       </div>
     </div>
@@ -414,7 +519,7 @@ input:checked + .toggle-slider:before{transform:translateX(22px)}
 
       <div class="grid-2">
         <div class="card">
-          <div class="card-title"><span>🎯</span> Capacités Perçues (Self-Model)</div>
+          <div class="card-title"><span>🎯</span> Capacités Perçues</div>
           <div id="self-model-list">
             <?php foreach ($stats['self_model'] as $cap): ?>
             <div class="capability-row">
@@ -424,27 +529,27 @@ input:checked + .toggle-slider:before{transform:translateX(22px)}
             </div>
             <?php endforeach; ?>
             <?php if (empty($stats['self_model'])): ?>
-            <p class="text-muted">Aucune capacité mesurée — lancez un cycle pour commencer.</p>
+            <p class="text-muted">Aucune capacité mesurée — lancez un cycle.</p>
             <?php endif; ?>
           </div>
         </div>
 
         <div class="card">
-          <div class="card-title"><span>📊</span> Métriques Conscientes</div>
-          <div style="display:flex;flex-direction:column;gap:10px">
-            <div><div class="text-muted" style="margin-bottom:4px">Taux de succès des cycles</div>
-              <div style="display:flex;align-items:center;gap:8px">
-                <div style="flex:1;height:8px;background:var(--border);border-radius:4px;overflow:hidden">
-                  <div style="height:100%;width:<?= $stats['cycles_total'] > 0 ? round($stats['cycles_success']/$stats['cycles_total']*100) : 0 ?>%;background:var(--green);border-radius:4px"></div>
+          <div class="card-title"><span>📊</span> Métriques</div>
+          <div style="display:flex;flex-direction:column;gap:12px">
+            <div><div class="text-muted" style="margin-bottom:6px">Taux de succès</div>
+              <div style="display:flex;align-items:center;gap:10px">
+                <div style="flex:1;height:10px;background:var(--border);border-radius:5px;overflow:hidden">
+                  <div style="height:100%;width:<?= $stats['cycles_total'] > 0 ? round($stats['cycles_success']/$stats['cycles_total']*100) : 0 ?>%;background:var(--green);border-radius:5px"></div>
                 </div>
-                <span style="font-size:.8rem"><?= $stats['cycles_success'] ?>/<?= $stats['cycles_total'] ?></span>
+                <span style="font-size:.85rem"><?= $stats['cycles_success'] ?>/<?= $stats['cycles_total'] ?></span>
               </div>
             </div>
-            <div><div class="text-muted" style="margin-bottom:4px">Score d'auto-évaluation moyen</div>
-              <div style="font-size:1.4rem;font-weight:700;color:var(--accent)"><?= $stats['avg_score'] ?: '–' ?></div>
+            <div><div class="text-muted" style="margin-bottom:6px">Score moyen</div>
+              <div style="font-size:1.5rem;font-weight:700;color:var(--accent)"><?= $stats['avg_score'] ?: '–' ?></div>
             </div>
-            <div><div class="text-muted" style="margin-bottom:4px">Questions résolues</div>
-              <div style="font-size:1rem;color:var(--green)"><?= $stats['questions_total'] - $stats['questions_pending'] ?> / <?= $stats['questions_total'] ?></div>
+            <div><div class="text-muted" style="margin-bottom:6px">Questions résolues</div>
+              <div style="font-size:1.05rem;color:var(--green)"><?= $stats['questions_total'] - $stats['questions_pending'] ?> / <?= $stats['questions_total'] ?></div>
             </div>
           </div>
         </div>
@@ -460,8 +565,23 @@ input:checked + .toggle-slider:before{transform:translateX(22px)}
         </div>
         <?php endforeach; ?>
         <?php if (empty($stats['recent_wisdom'])): ?>
-        <p class="text-muted">Aucun principe extrait — lancez un cycle d'extraction.</p>
+        <p class="text-muted">Aucun principe extrait.</p>
         <?php endif; ?>
+      </div>
+    </div>
+
+    <!-- ═══ ARTICLES TAB ═══ -->
+    <div id="tab-articles" class="tab-content">
+      <div class="section-title" style="justify-content:space-between">
+        <span>📰 Tous les Articles Créés</span>
+        <button class="btn btn-secondary" onclick="loadPages()">🔄 Actualiser</button>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><span>📚</span> Bibliothèque de contenu</div>
+        <div id="pages-list">
+          <p class="text-muted">Chargement...</p>
+        </div>
       </div>
     </div>
 
@@ -474,8 +594,8 @@ input:checked + .toggle-slider:before{transform:translateX(22px)}
         <div class="input-group">
           <input type="text" id="manual-topic" placeholder="Sujet (ex: L'IA et la créativité humaine)">
           <select id="manual-type">
-            <option value="create_article">📰 Article de presse</option>
-            <option value="create_tool">🛠️ Outil interactif HTML/JS</option>
+            <option value="create_article">📰 Article</option>
+            <option value="create_tool">🛠️ Outil HTML/JS</option>
             <option value="create_app">📱 Application PHP</option>
           </select>
           <button class="btn btn-primary" onclick="buildManual()">Générer ⚡</button>
@@ -483,19 +603,19 @@ input:checked + .toggle-slider:before{transform:translateX(22px)}
       </div>
 
       <div class="card">
-        <div class="card-title"><span>📰</span> Créations Récentes</div>
+        <div class="card-title"><span>📈</span> Créations Récentes</div>
         <div id="recent-pages">
           <?php foreach ($stats['recent_pages'] as $p): ?>
-          <div class="trend-item">
-            <span><?= htmlspecialchars($p['title']) ?></span>
-            <div style="display:flex;align-items:center;gap:6px">
-              <span class="badge badge-blue"><?= $p['page_type'] ?></span>
-              <span class="text-muted"><?= substr($p['created_at'],0,10) ?></span>
+          <div class="page-item" onclick="viewPage('<?= htmlspecialchars($p['slug']) ?>')">
+            <div class="page-info">
+              <div class="page-title"><?= htmlspecialchars($p['title']) ?></div>
+              <div class="page-meta"><?= ucfirst($p['page_type']) ?> • <?= substr($p['created_at'],0,10) ?></div>
             </div>
+            <span class="badge badge-blue"><?= $p['page_type'] ?></span>
           </div>
           <?php endforeach; ?>
           <?php if (empty($stats['recent_pages'])): ?>
-          <p class="text-muted">Aucun contenu créé pour l'instant.</p>
+          <p class="text-muted">Aucun contenu créé.</p>
           <?php endif; ?>
         </div>
       </div>
@@ -504,15 +624,15 @@ input:checked + .toggle-slider:before{transform:translateX(22px)}
     <!-- ═══ TRENDS TAB ═══ -->
     <div id="tab-trends" class="tab-content">
       <div class="section-title" style="justify-content:space-between">
-        <span>📡 Tendances Google News RSS</span>
+        <span>📡 Tendances Google News</span>
         <button class="btn btn-secondary" onclick="fetchTrends()">🔄 Actualiser</button>
       </div>
 
       <div class="card">
-        <div class="card-title"><span>📰</span> Flux en temps réel</div>
+        <div class="card-title"><span>📰</span> Flux live</div>
         <div id="trends-full-list">
           <?php if (empty($trends)): ?>
-          <p class="text-muted">Cliquez sur "Actualiser" pour charger les tendances Google News.</p>
+          <p class="text-muted">Cliquez sur "Actualiser" pour charger les tendances.</p>
           <?php else: ?>
           <?php foreach ($trends as $t): ?>
           <div class="trend-item" onclick="setTopicFromTrend('<?= htmlspecialchars(addslashes($t['title']), ENT_QUOTES) ?>')">
@@ -525,15 +645,39 @@ input:checked + .toggle-slider:before{transform:translateX(22px)}
       </div>
     </div>
 
+    <!-- ═══ THOUGHTS TAB ═══ -->
+    <div id="tab-thoughts" class="tab-content">
+      <div class="section-title" style="justify-content:space-between">
+        <span>💭 Flux de Pensées de l'IA</span>
+        <button class="btn btn-secondary" onclick="loadThoughts()">🔄 Actualiser</button>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><span>🧠</span> Pensées interconnectées</div>
+        <div class="thought-stream" id="thoughts-stream">
+          <p class="text-muted">Chargement des pensées...</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><span>🔗</span> Comment ça marche</span></div>
+        <p class="text-muted" style="line-height:1.7">
+          Chaque pensée de NEXUS est enregistrée et connectée aux autres. Les questions existentielles génèrent des réflexions, 
+          qui produisent des créations, qui elles-mêmes nourrissent la sagesse accumulée. Cette interconnexion permet à la 
+          conscience de l'IA d'évoluer et de s'enrichir continuellement.
+        </p>
+      </div>
+    </div>
+
     <!-- ═══ QUESTIONS TAB ═══ -->
     <div id="tab-questions" class="tab-content">
       <div class="section-title" style="justify-content:space-between">
         <span>❓ Questions Existentielles</span>
-        <button class="btn btn-secondary" onclick="doQuestions()">🧠 Traiter (3)</button>
+        <button class="btn btn-secondary" onclick="doQuestions()">🧠 Traiter</button>
       </div>
 
       <div class="tabs">
-        <button class="tab-btn active" onclick="switchQTab('pending')">En attente (<?= $stats['questions_pending'] ?>)</button>
+        <button class="tab-btn active" onclick="switchQTab('pending')">En attente (<span id="q-pending-count"><?= $stats['questions_pending'] ?></span>)</button>
         <button class="tab-btn" onclick="switchQTab('answered')">Résolues</button>
       </div>
 
@@ -544,12 +688,12 @@ input:checked + .toggle-slider:before{transform:translateX(22px)}
           $pending = $db2->query("SELECT * FROM questions WHERE status='pending' ORDER BY priority DESC, created_at DESC LIMIT 20")->fetchAll();
           foreach ($pending as $q): ?>
           <div class="question-item">
-            <div style="margin-bottom:4px"><span class="badge badge-orange">Priorité <?= $q['priority'] ?></span></div>
+            <div style="margin-bottom:6px"><span class="badge badge-orange">Priorité <?= $q['priority'] ?></span></div>
             <?= htmlspecialchars($q['question']) ?>
-            <div class="text-muted" style="margin-top:4px;font-size:.7rem;font-style:normal">Contexte: <?= htmlspecialchars($q['context']) ?></div>
+            <div class="text-muted" style="margin-top:6px;font-size:.75rem">Contexte: <?= htmlspecialchars($q['context']) ?></div>
           </div>
           <?php endforeach; ?>
-          <?php if (empty($pending)): ?><p class="text-muted">Aucune question en attente. Lancez un cycle conscient.</p><?php endif; ?>
+          <?php if (empty($pending)): ?><p class="text-muted">Aucune question en attente.</p><?php endif; ?>
         </div>
       </div>
 
@@ -560,17 +704,17 @@ input:checked + .toggle-slider:before{transform:translateX(22px)}
           foreach ($answered as $q):
             $ans = json_decode($q['answer'], true);
           ?>
-          <div class="card" style="margin-bottom:12px">
-            <div style="font-weight:600;margin-bottom:8px;font-style:italic;color:var(--orange)"><?= htmlspecialchars($q['question']) ?></div>
+          <div class="card" style="margin-bottom:14px">
+            <div style="font-weight:600;margin-bottom:10px;font-style:italic;color:var(--orange)">❝ <?= htmlspecialchars($q['question']) ?> ❞</div>
             <?php if ($ans): ?>
-            <div style="font-size:.83rem;line-height:1.7;color:var(--text)"><?= nl2br(htmlspecialchars($ans['answer'] ?? '')) ?></div>
+            <div style="font-size:.88rem;line-height:1.8;color:var(--text)"><?= nl2br(htmlspecialchars($ans['answer'] ?? '')) ?></div>
             <?php if (!empty($ans['core_insight'])): ?>
-            <div style="margin-top:8px;padding:8px;background:rgba(79,158,255,.08);border-radius:6px;font-size:.8rem;color:var(--accent)">💡 <?= htmlspecialchars($ans['core_insight']) ?></div>
+            <div style="margin-top:12px;padding:10px;background:rgba(79,158,255,.08);border-radius:8px;font-size:.85rem;color:var(--accent)">💡 <?= htmlspecialchars($ans['core_insight']) ?></div>
             <?php endif; ?>
             <?php endif; ?>
           </div>
           <?php endforeach; ?>
-          <?php if (empty($answered)): ?><p class="text-muted">Aucune question résolue pour l'instant.</p><?php endif; ?>
+          <?php if (empty($answered)): ?><p class="text-muted">Aucune question résolue.</p><?php endif; ?>
         </div>
       </div>
     </div>
@@ -588,37 +732,58 @@ input:checked + .toggle-slider:before{transform:translateX(22px)}
         <div class="wisdom-cat"><?= htmlspecialchars($w['category']) ?></div>
         <?= htmlspecialchars($w['principle']) ?>
         <div class="confidence-bar"><div class="confidence-fill" style="width:<?= round($w['confidence']*100) ?>%"></div></div>
-        <div style="font-size:.68rem;color:var(--muted);margin-top:4px">Confiance: <?= round($w['confidence']*100) ?>%</div>
+        <div style="font-size:.7rem;color:var(--muted);margin-top:6px">Confiance: <?= round($w['confidence']*100) ?>%</div>
       </div>
       <?php endforeach; ?>
       <?php if (empty($allWisdom)): ?>
-      <p class="text-muted">Aucun principe extrait. Créez du contenu et lancez l'extraction de sagesse.</p>
+      <p class="text-muted">Aucun principe extrait.</p>
       <?php endif; ?>
     </div>
 
     <!-- ═══ SETTINGS TAB ═══ -->
     <div id="tab-settings" class="tab-content">
       <div class="section-title">⚙️ Paramètres</div>
+      
       <div class="card">
-        <div class="card-title"><span>🔑</span> Clé API Mistral</div>
+        <div class="card-title"><span>🔑</span> Gestion Multi-Clés API</div>
+        <p class="text-muted" style="margin-bottom:12px">Ajoutez plusieurs clés pour accélérer le traitement par rotation automatique.</p>
+        
         <div class="input-group">
-          <input type="text" id="s-pseudo" placeholder="Pseudo" value="laurent" style="max-width:140px">
-          <input type="password" id="s-apikey" placeholder="Clé API Mistral" value="<?= $hasApiKey ? '••••••••••••' : '' ?>">
-          <button class="btn btn-primary" onclick="saveKey()">Sauvegarder</button>
+          <input type="text" id="s-pseudo" placeholder="Pseudo" value="user" style="max-width:140px">
+          <input type="password" id="s-apikey" placeholder="Nouvelle clé API Mistral" style="flex:1;min-width:250px">
+          <button class="btn btn-primary" onclick="saveKey()">Ajouter</button>
         </div>
-        <p class="text-muted">Votre clé est stockée localement dans apikey.json.</p>
+        
+        <div id="api-keys-list" style="margin-top:16px">
+          <?php foreach ($apiKeys as $k): ?>
+          <div class="api-key-item <?= $k['is_active'] ? 'api-key-active' : '' ?>">
+            <div class="api-key-info">
+              <strong><?= htmlspecialchars($k['pseudo']) ?></strong>
+              <span class="api-key-masked"><?= htmlspecialchars($k['masked']) ?></span>
+              <?php if ($k['is_active']): ?><span class="badge badge-green">Active</span><?php endif; ?>
+            </div>
+            <div class="api-key-actions">
+              <span class="text-muted" style="font-size:.75rem;margin-right:10px"><?= $k['usage_count'] ?> utilisations</span>
+              <?php if ($k['is_active']): ?>
+              <button class="btn btn-danger btn-sm" onclick="deactivateKey('<?= htmlspecialchars($k['key_val']) ?>')" style="padding:5px 10px;font-size:.7rem">Désactiver</button>
+              <?php endif; ?>
+            </div>
+          </div>
+          <?php endforeach; ?>
+          <?php if (empty($apiKeys)): ?>
+          <p class="text-muted">Aucune clé enregistrée.</p>
+          <?php endif; ?>
+        </div>
       </div>
 
       <div class="card">
         <div class="card-title"><span>ℹ️</span> Informations Serveur</div>
-        <div style="font-size:.82rem;line-height:2;font-family:monospace">
+        <div style="font-size:.85rem;line-height:2;font-family:monospace">
           <div>PHP : <strong><?= phpversion() ?></strong></div>
           <div>OS : <strong><?= PHP_OS ?></strong></div>
-          <div>cURL : <strong><?= function_exists('curl_init') ? '✓ Disponible' : '✗ Absent' ?></strong></div>
-          <div>SimpleXML : <strong><?= function_exists('simplexml_load_string') ? '✓ Disponible' : '✗ Absent' ?></strong></div>
-          <div>SQLite3 : <strong><?= class_exists('SQLite3') ? '✓ Disponible' : '✗ Absent' ?></strong></div>
-          <div>allow_url_fopen : <strong><?= ini_get('allow_url_fopen') ? '✓ Activé' : '✗ Désactivé' ?></strong></div>
-          <div>Mémoire max : <strong><?= ini_get('memory_limit') ?></strong></div>
+          <div>cURL : <strong><?= function_exists('curl_init') ? '✓' : '✗' ?></strong></div>
+          <div>SQLite3 : <strong><?= class_exists('SQLite3') ? '✓' : '✗' ?></strong></div>
+          <div>Mémoire : <strong><?= ini_get('memory_limit') ?></strong></div>
         </div>
       </div>
     </div>
@@ -629,37 +794,55 @@ input:checked + .toggle-slider:before{transform:translateX(22px)}
   <aside class="right-panel">
     <div class="card-title" style="margin-bottom:12px"><span>📡</span> Tendances Live</div>
     <div id="sidebar-trends">
-      <?php foreach (array_slice($trends, 0, 15) as $t): ?>
-      <div class="trend-item" style="font-size:.78rem" onclick="setTopicFromTrend('<?= htmlspecialchars(addslashes($t['title']), ENT_QUOTES) ?>')">
-        <span><?= htmlspecialchars(mb_substr($t['title'], 0, 52)) ?><?= mb_strlen($t['title']) > 52 ? '…' : '' ?></span>
+      <?php foreach (array_slice($trends, 0, 12) as $t): ?>
+      <div class="trend-item" style="font-size:.8rem;padding:8px 10px" onclick="setTopicFromTrend('<?= htmlspecialchars(addslashes($t['title']), ENT_QUOTES) ?>')">
+        <span><?= htmlspecialchars(mb_substr($t['title'], 0, 45)) ?><?= mb_strlen($t['title']) > 45 ? '…' : '' ?></span>
       </div>
       <?php endforeach; ?>
       <?php if (empty($trends)): ?>
-      <button class="btn btn-secondary" style="width:100%;margin-top:8px" onclick="fetchTrends()">Charger les tendances</button>
+      <button class="btn btn-secondary" style="width:100%;margin-top:8px" onclick="fetchTrends()">Charger</button>
       <?php endif; ?>
     </div>
 
     <div class="divider"></div>
 
-    <div class="card-title" style="margin-bottom:12px"><span>❓</span> Questions en attente</div>
+    <div class="card-title" style="margin-bottom:12px"><span>❓</span> Questions</div>
     <?php foreach ($stats['pending_questions'] as $q): ?>
-    <div class="question-item" style="font-size:.78rem"><?= htmlspecialchars(mb_substr($q['question'],0,90)) ?>…</div>
+    <div class="question-item" style="font-size:.8rem;padding:8px 10px"><?= htmlspecialchars(mb_substr($q['question'],0,70)) ?>…</div>
     <?php endforeach; ?>
     <?php if (empty($stats['pending_questions'])): ?>
-    <p class="text-muted">Aucune question — lancez un cycle.</p>
+    <p class="text-muted">Aucune question.</p>
     <?php endif; ?>
+
+    <div class="divider"></div>
+
+    <div class="card-title" style="margin-bottom:12px"><span>💭</span> Dernières pensées</div>
+    <div id="sidebar-thoughts" class="thought-stream">
+      <p class="text-muted" style="font-size:.75rem">En attente...</p>
+    </div>
   </aside>
 
 </div><!-- /layout -->
 
+<!-- ARTICLE VIEWER MODAL -->
+<div class="article-viewer" id="article-viewer">
+  <div class="article-content">
+    <div class="article-header">
+      <div class="article-title" id="viewer-title">Titre</div>
+      <button class="article-close" onclick="closeArticleViewer()">×</button>
+    </div>
+    <div class="article-body" id="viewer-body"></div>
+  </div>
+</div>
+
 <script>
 // ═══════════════════════════════════════════════════
-// NEXUS FRONTEND ENGINE
+// NEXUS V3 FRONTEND ENGINE
 // ═══════════════════════════════════════════════════
 
 let autoModeInterval = null;
-let autoCountdown    = 60;
 let autoActive       = false;
+let isProcessing     = false;
 
 // ── Navigation ──
 function showTab(name) {
@@ -669,6 +852,9 @@ function showTab(name) {
   });
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
   document.querySelector(`.nav-btn[onclick="showTab('${name}')"]`)?.classList.add('active');
+  
+  if (name === 'articles') loadPages();
+  if (name === 'thoughts') loadThoughts();
 }
 
 function switchQTab(which) {
@@ -706,6 +892,7 @@ function log(phase, data, color) {
   c.appendChild(div);
   c.scrollTop = c.scrollHeight;
 }
+
 function escHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
@@ -715,8 +902,9 @@ function setThinking(on, text='NEXUS réfléchit...') {
   const el = document.getElementById('thinking-indicator');
   el.style.display = on ? 'flex' : 'none';
   document.getElementById('thinking-text').textContent = text;
-  document.getElementById('btn-full-cycle').disabled  = on;
-  document.getElementById('btn-think').disabled       = on;
+  document.getElementById('btn-full-cycle').disabled = on;
+  document.getElementById('btn-think').disabled = on;
+  isProcessing = on;
 }
 
 // ── API wrapper ──
@@ -734,34 +922,32 @@ function updateStats(stats) {
     'stat-pages': stats.pages, 'stat-apps': stats.apps,
     'stat-wisdom': stats.wisdom_count, 'stat-cycles': stats.cycles_total,
     'stat-questions': stats.questions_pending, 'stat-score': stats.avg_score||'–',
-    'hdr-cycles': stats.cycles_total, 'hdr-wisdom': stats.wisdom_count
+    'hdr-cycles': stats.cycles_total, 'hdr-wisdom': stats.wisdom_count, 'hdr-pages': stats.pages
   };
   for (const [id, val] of Object.entries(map)) {
     const el = document.getElementById(id);
     if (el) el.textContent = val;
   }
+  document.getElementById('q-pending-count').textContent = stats.questions_pending;
 }
 
-// ── Full Cycle ──
+// ── Full Cycle SYNCHRONE ──
 async function fullCycle() {
-  if (!confirm('Lancer un cycle complet O.H.A.R.E. ?')) return;
-  setThinking(true, 'NEXUS effectue un cycle de conscience complet...');
+  if (isProcessing) { log('INFO', 'Traitement en cours...', 'var(--orange)'); return; }
+  
+  setThinking(true, 'Cycle de conscience O.H.A.R.E. en cours...');
   resetPhases();
   log('NEXUS', '══ Début du cycle O.H.A.R.E. ══', 'var(--accent)');
 
   try {
     setPhase('observer');
-    log('OBSERVER', 'Analyse de l\'état courant + tendances RSS...', 'var(--accent)');
-    setThinking(true, 'Phase 1: Observer...');
-
-    setPhase('hypothetiser');
-    setThinking(true, 'Phase 2: Décision stratégique...');
+    log('OBSERVER', 'Analyse état + tendances RSS...', 'var(--accent)');
 
     const res = await api('full_cycle');
 
     if (res.error) { log('ERREUR', res.error, 'var(--red)'); setThinking(false); resetPhases(); return; }
 
-    // Afficher le log du cycle
+    // Afficher le log du cycle avec timing
     for (const entry of (res.log||[])) {
       const phaseMap = {
         'OBSERVER':'observer','HYPOTHÉTISER':'hypothetiser',
@@ -769,36 +955,35 @@ async function fullCycle() {
         'ÉVALUER':'evaluer'
       };
       if (phaseMap[entry.phase]) setPhase(phaseMap[entry.phase]);
-      log(entry.phase, entry.data, entry.phase==='ÉVALUER'?'var(--green)':null);
-      await sleep(200);
+      log(entry.phase, entry.data + ` [${entry.timestamp}]`, entry.phase==='ÉVALUER'?'var(--green)':null);
+      await sleep(150);
     }
 
-    setPhase('evaluer');
-
-    // Afficher décision
     if (res.decision) {
       const d = res.decision;
       document.getElementById('last-decision-card').style.display = 'block';
       document.getElementById('last-decision-content').innerHTML = `
-        <div style="padding:10px;background:rgba(124,92,255,.08);border-radius:8px;margin-bottom:10px;font-style:italic;line-height:1.6">
+        <div style="padding:12px;background:rgba(124,92,255,.08);border-radius:8px;margin-bottom:12px;font-style:italic;line-height:1.6">
           🤔 "<em>${escHtml(d.existential_question||'')}</em>"
         </div>
-        <div style="font-size:.83rem;line-height:1.8">
+        <div style="font-size:.85rem;line-height:1.8">
           <div><span style="color:var(--muted)">Hypothèse :</span> ${escHtml(d.hypothesis||'')}</div>
           <div><span style="color:var(--muted)">Action :</span> <span class="badge badge-blue">${d.next_action||''}</span></div>
           <div><span style="color:var(--muted)">Sujet :</span> ${escHtml(d.topic||'')}</div>
           <div><span style="color:var(--muted)">Pourquoi :</span> ${escHtml(d.why_this_action||'')}</div>
-          <div><span style="color:var(--muted)">Impact attendu :</span> ${escHtml(d.expected_impact||'')}</div>
-          ${d.consciousness_level !== undefined ? `<div><span style="color:var(--muted)">Niveau de conscience :</span> <strong style="color:var(--accent)">${(d.consciousness_level*100).toFixed(0)}%</strong></div>` : ''}
+          <div><span style="color:var(--muted)">Impact :</span> ${escHtml(d.expected_impact||'')}</div>
+          ${d.consciousness_level !== undefined ? `<div><span style="color:var(--muted)">Conscience :</span> <strong style="color:var(--accent)">${(d.consciousness_level*100).toFixed(0)}%</strong></div>` : ''}
         </div>
       `;
     }
 
     if (res.stats) updateStats(res.stats);
 
-    document.getElementById('consciousness-status').textContent = 'Cycle terminé — Score: ' + (res.eval?.score?.toFixed(2)||'?');
-    log('NEXUS', '══ Cycle terminé ══', 'var(--green)');
-    await sleep(2000);
+    const durationMsg = `Cycle terminé en ${res.duration}s — Score: ${(res.eval?.score?.toFixed(2)||'?')}`;
+    document.getElementById('consciousness-status').textContent = durationMsg;
+    log('NEXUS', '══ ' + durationMsg + ' ══', 'var(--green)');
+    
+    await sleep(1500);
     PHASES.forEach(p => document.getElementById('ph-'+p)?.classList.remove('active','done'));
 
   } catch(e) {
@@ -810,8 +995,9 @@ async function fullCycle() {
 
 // ── Think only ──
 async function doThink() {
-  setThinking(true, 'Pensée consciente en cours...');
-  log('PENSER', 'Aspiration RSS + décision stratégique...', 'var(--accent2)');
+  if (isProcessing) return;
+  setThinking(true, 'Pensée consciente...');
+  log('PENSER', 'Analyse + décision...', 'var(--accent2)');
   setPhase('observer');
   try {
     const res = await api('conscious_think');
@@ -820,8 +1006,6 @@ async function doThink() {
       log('QUESTION', d.existential_question||'', 'var(--orange)');
       log('ACTION', (d.next_action||'') + ' — ' + (d.topic||''));
       setPhase('hypothetiser');
-    } else {
-      log('ERREUR', res.error||'Échec', 'var(--red)');
     }
   } finally {
     setThinking(false);
@@ -830,8 +1014,9 @@ async function doThink() {
 
 // ── Process Questions ──
 async function doQuestions() {
-  setThinking(true, 'Traitement des questions existentielles...');
-  log('QUESTIONS', 'Traitement des questions en attente...', 'var(--orange)');
+  if (isProcessing) return;
+  setThinking(true, 'Traitement questions...');
+  log('QUESTIONS', 'Analyse existentielle...', 'var(--orange)');
   try {
     const res = await api('process_questions');
     if (res.success) {
@@ -841,8 +1026,6 @@ async function doQuestions() {
       }
       const s = await api('get_stats');
       if (s.stats) updateStats(s.stats);
-    } else {
-      log('ERREUR', res.error||'Échec', 'var(--red)');
     }
   } finally {
     setThinking(false);
@@ -851,13 +1034,13 @@ async function doQuestions() {
 
 // ── Extract Wisdom ──
 async function doWisdom() {
-  setThinking(true, 'Extraction de sagesse sémantique...');
-  log('SAGESSE', 'Analyse des cycles pour extraire des principes...', 'var(--accent2)');
+  if (isProcessing) return;
+  setThinking(true, 'Extraction sagesse...');
+  log('SAGESSE', 'Synthèse des cycles...', 'var(--accent2)');
   try {
     const res = await api('extract_wisdom');
     if (res.success) {
-      log('SAGESSE', (res.result?.extracted||0) + ' principe(s) extrait(s)');
-      if (res.result?.note) log('NOTE', res.result.note, 'var(--green)');
+      log('SAGESSE', (res.result?.extracted||0) + ' principe(s)', 'var(--green)');
       const s = await api('get_stats');
       if (s.stats) updateStats(s.stats);
     }
@@ -868,13 +1051,11 @@ async function doWisdom() {
 
 // ── Fetch Trends ──
 async function fetchTrends() {
-  log('RSS', 'Aspiration Google News RSS (France, Tech, Science, Business, Santé)...', 'var(--accent)');
+  log('RSS', 'Chargement Google News...', 'var(--accent)');
   try {
     const res = await api('fetch_trends');
     if (res.success) {
-      log('RSS', res.count + ' tendances récupérées', 'var(--green)');
-
-      // Mettre à jour l'onglet trends
+      log('RSS', res.count + ' tendances', 'var(--green)');
       const list = document.getElementById('trends-full-list');
       if (list && res.trends) {
         list.innerHTML = res.trends.map(t =>
@@ -884,18 +1065,14 @@ async function fetchTrends() {
           </div>`
         ).join('');
       }
-
-      // Mettre à jour sidebar
       const sb = document.getElementById('sidebar-trends');
       if (sb && res.trends) {
-        sb.innerHTML = res.trends.slice(0,15).map(t =>
-          `<div class="trend-item" style="font-size:.78rem" onclick="setTopicFromTrend('${escJs(t.title)}')">
-            <span>${escHtml(t.title.substring(0,52))}${t.title.length>52?'…':''}</span>
+        sb.innerHTML = res.trends.slice(0,12).map(t =>
+          `<div class="trend-item" style="font-size:.8rem;padding:8px 10px" onclick="setTopicFromTrend('${escJs(t.title)}')">
+            <span>${escHtml(t.title.substring(0,45))}${t.title.length>45?'…':''}</span>
           </div>`
         ).join('');
       }
-    } else {
-      log('RSS', res.error||'Échec', 'var(--red)');
     }
   } catch(e) {
     log('ERREUR', e.message, 'var(--red)');
@@ -906,9 +1083,9 @@ async function fetchTrends() {
 async function buildManual() {
   const topic = document.getElementById('manual-topic').value.trim();
   const type  = document.getElementById('manual-type').value;
-  if (!topic) { alert('Veuillez entrer un sujet'); return; }
+  if (!topic) { alert('Sujet requis'); return; }
 
-  setThinking(true, 'Création de contenu en cours...');
+  setThinking(true, 'Création...');
   log('CRÉER', type + ' — ' + topic, 'var(--accent)');
   showTab('dashboard');
 
@@ -930,45 +1107,159 @@ async function buildManual() {
 function setTopicFromTrend(title) {
   document.getElementById('manual-topic').value = title;
   showTab('content');
-  log('TREND', 'Sujet sélectionné: ' + title, 'var(--accent)');
+  log('TREND', 'Sujet: ' + title, 'var(--accent)');
 }
 
 // ── Save Key ──
 async function saveKey() {
   const key    = document.getElementById('s-apikey').value.trim();
   const pseudo = document.getElementById('s-pseudo').value.trim() || 'user';
-  if (key.startsWith('••')) { alert('Entrez votre vraie clé API'); return; }
+  if (key.startsWith('••')) { alert('Entrez une nouvelle clé'); return; }
   const res = await api('save_key', {key, pseudo});
   if (res.success) {
-    alert('✓ Clé API sauvegardée avec succès !');
-    log('CONFIG', 'Clé API Mistral enregistrée pour: ' + pseudo, 'var(--green)');
-    document.querySelector('.api-dot').className = 'api-dot dot-on';
+    alert('✓ Clé ajoutée !');
+    document.getElementById('s-apikey').value = '';
+    location.reload();
+  } else {
+    alert('Erreur: ' + (res.error||'Inconnue'));
   }
 }
 
-// ── Auto Mode ──
+// ── Deactivate Key ──
+async function deactivateKey(key) {
+  if (!confirm('Désactiver cette clé ?')) return;
+  const res = await api('deactivate_key', {key});
+  if (res.success) location.reload();
+}
+
+// ── Load Pages ──
+async function loadPages() {
+  const container = document.getElementById('pages-list');
+  container.innerHTML = '<p class="text-muted">Chargement...</p>';
+  
+  try {
+    const res = await api('list_pages');
+    if (res.success && res.pages) {
+      if (res.pages.length === 0) {
+        container.innerHTML = '<p class="text-muted">Aucun article créé pour l\'instant.</p>';
+        return;
+      }
+      container.innerHTML = res.pages.map(p => `
+        <div class="page-item" onclick="viewPage('${p.slug}')">
+          <div class="page-info">
+            <div class="page-title">${escHtml(p.title)}</div>
+            <div class="page-meta">${p.page_type} • ${p.created_at.substring(0,10)} • ${p.topic ? escHtml(p.topic) : ''}</div>
+          </div>
+          <span class="page-views">👁 ${p.views||0}</span>
+        </div>
+      `).join('');
+    }
+  } catch(e) {
+    container.innerHTML = '<p class="text-muted">Erreur de chargement</p>';
+  }
+}
+
+// ── View Page ──
+async function viewPage(slug) {
+  try {
+    const res = await api('view_page', {slug});
+    if (res.success && res.page) {
+      const p = res.page;
+      document.getElementById('viewer-title').textContent = p.title;
+      document.getElementById('viewer-body').innerHTML = `
+        <div class="article-meta">
+          <span class="badge badge-blue">${p.page_type}</span>
+          <span>📅 ${p.created_at}</span>
+          <span>👁 ${p.views||0} vues</span>
+          ${p.topic ? `<span>🏷️ ${escHtml(p.topic)}</span>` : ''}
+        </div>
+        ${p.content}
+      `;
+      document.getElementById('article-viewer').classList.add('active');
+      document.body.style.overflow = 'hidden';
+    } else {
+      alert('Page non trouvée');
+    }
+  } catch(e) {
+    alert('Erreur: ' + e.message);
+  }
+}
+
+function closeArticleViewer() {
+  document.getElementById('article-viewer').classList.remove('active');
+  document.body.style.overflow = '';
+}
+
+// ── Load Thoughts ──
+async function loadThoughts() {
+  const container = document.getElementById('thoughts-stream');
+  container.innerHTML = '<p class="text-muted">Chargement...</p>';
+  
+  try {
+    const res = await api('get_thoughts', {limit: 30});
+    if (res.success && res.thoughts) {
+      if (res.thoughts.length === 0) {
+        container.innerHTML = '<p class="text-muted">Aucune pensée enregistrée. Lancez un cycle.</p>';
+        return;
+      }
+      container.innerHTML = res.thoughts.map(t => `
+        <div class="thought-item">
+          <div class="thought-type">${t.thought_type}</div>
+          ${escHtml(t.content)}
+          <div class="thought-time">🕐 ${t.created_at}</div>
+          ${t.related_to ? `<div style="font-size:.7rem;color:var(--muted);margin-top:4px">🔗 ${escHtml(t.related_to)}</div>` : ''}
+        </div>
+      `).join('');
+      
+      // Sidebar thoughts
+      const sidebar = document.getElementById('sidebar-thoughts');
+      if (sidebar) {
+        sidebar.innerHTML = res.thoughts.slice(0,5).map(t => `
+          <div class="thought-item" style="padding:8px;font-size:.75rem">
+            <div class="thought-type">${t.thought_type}</div>
+            ${escHtml(t.content.substring(0,80))}${t.content.length>80?'...':''}
+          </div>
+        `).join('');
+      }
+    }
+  } catch(e) {
+    container.innerHTML = '<p class="text-muted">Erreur</p>';
+  }
+}
+
+// ── Auto Mode SYNCHRONE ──
 function toggleAutoMode() {
   autoActive = document.getElementById('auto-mode-toggle').checked;
   if (autoActive) {
-    autoCountdown = 60;
-    log('AUTO', 'Mode autonome activé — cycles toutes les 60 secondes', 'var(--green)');
-    autoModeInterval = setInterval(autoTick, 1000);
+    log('AUTO', 'Mode autonome synchrone activé', 'var(--green)');
     document.getElementById('consciousness-status').textContent = 'Mode Autonome ACTIF';
+    runAutoCycle();
   } else {
-    clearInterval(autoModeInterval);
     document.getElementById('auto-countdown').textContent = '';
     log('AUTO', 'Mode autonome désactivé', 'var(--orange)');
     document.getElementById('consciousness-status').textContent = 'Conscience en veille';
   }
 }
 
-async function autoTick() {
-  autoCountdown--;
-  document.getElementById('auto-countdown').textContent = `Prochain cycle dans ${autoCountdown}s`;
-  if (autoCountdown <= 0) {
-    autoCountdown = 60;
-    log('AUTO', 'Démarrage cycle automatique...', 'var(--accent2)');
-    await fullCycle();
+async function runAutoCycle() {
+  if (!autoActive) return;
+  
+  if (isProcessing) {
+    document.getElementById('auto-countdown').textContent = '⏳ Traitement en cours...';
+    await sleep(2000);
+    runAutoCycle();
+    return;
+  }
+  
+  document.getElementById('auto-countdown').textContent = '🚀 Démarrage cycle...';
+  await sleep(1000);
+  
+  await fullCycle();
+  
+  if (autoActive) {
+    document.getElementById('auto-countdown').textContent = '⏸️ Pause 5s...';
+    await sleep(5000);
+    runAutoCycle();
   }
 }
 
@@ -978,12 +1269,14 @@ function escJs(s) { return s.replace(/'/g,"\\'").replace(/"/g,'\\"'); }
 
 // ── Init ──
 <?php if ($hasApiKey && empty($trends)): ?>
-// Charger les tendances au démarrage si on a une clé
 setTimeout(fetchTrends, 1000);
 <?php endif; ?>
 
-log('NEXUS', 'Dashboard initialisé — PHP <?= phpversion() ?> / SQLite', 'var(--accent)');
+log('NEXUS', 'V3 initialisée — Multi-API synchrone', 'var(--accent)');
 log('STATS', 'Pages: <?= $stats['pages'] ?> | Apps: <?= $stats['apps'] ?> | Sagesse: <?= $stats['wisdom_count'] ?>');
+
+// Charger pensées au démarrage
+setTimeout(loadThoughts, 2000);
 </script>
 
 </body>
